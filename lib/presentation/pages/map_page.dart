@@ -50,6 +50,8 @@ class _MapPageState extends State<MapPage> {
             infoWindow: InfoWindow(title: suggestion.description),
           );
         _currentPosition = newPosition;
+        _suggestions = []; // Oculta el menú de sugerencias
+        _searchController.clear();
       });
     }
   }
