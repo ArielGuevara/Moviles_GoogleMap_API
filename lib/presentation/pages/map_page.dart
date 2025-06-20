@@ -1,9 +1,12 @@
-import 'dart:ui';
 import 'package:flutter/material.dart';
+import '../widgets/search_box.dart';
+import '../widgets/location_info_card.dart';
+import '../widgets/map_widget.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
-import 'package:geolocator/geolocator.dart';
-import 'package:geocoding/geocoding.dart';
 import 'package:google_maps_webservice/places.dart';
+import '../../services/location_service.dart';
+import '../../services/places_service.dart';
+import 'package:geocoding/geocoding.dart';
 
 class MapPage extends StatefulWidget {
   const MapPage({Key? key}) : super(key: key);
@@ -12,95 +15,47 @@ class MapPage extends StatefulWidget {
   State<MapPage> createState() => _MapPageState();
 }
 
+
 class _MapPageState extends State<MapPage> {
-  final TextEditingController _searchController = TextEditingController();
-  final GoogleMapsPlaces _places = GoogleMapsPlaces(apiKey: 'AIzaSyBTqXtB6zvGbF94g4S3EsCR_U-JbfaBbpI');
-  List<Prediction> _suggestions = [];
-  GoogleMapController? mapController;
-  LatLng? _currentPosition;
-  Marker? _marker;
+  final _searchController = TextEditingController();
+  final _locationService = LocationService();
+  final _placesService = PlacesService('AIzaSyBTqXtB6zvGbF94g4S3EsCR_U-JbfaBbpI');
+
+  LatLng? _selectedPosition;
   String? _address;
-
-  Future<void> _getSuggestions(String query) async {
-    if (query.isEmpty) {
-      setState(() {
-        _suggestions = [];
-      });
-      return;
-    }
-    final response = await _places.autocomplete(query);
-    if (response.isOkay) {
-      setState(() {
-        _suggestions = response.predictions;
-      });
-    }
-  }
-
-  Future<void> _selectSuggestion(Prediction suggestion) async {
-    final details = await _places.getDetailsByPlaceId(suggestion.placeId!);
-    if (details.isOkay) {
-      final location = details.result.geometry!.location;
-      final LatLng newPosition = LatLng(location.lat, location.lng);
-      mapController?.animateCamera(CameraUpdate.newLatLng(newPosition));
-      setState(() {
-        _marker =
-          Marker(
-            markerId: MarkerId(suggestion.placeId!),
-            position: newPosition,
-            infoWindow: InfoWindow(title: suggestion.description),
-          );
-        _currentPosition = newPosition;
-        _suggestions = []; // Oculta el menú de sugerencias
-        _searchController.clear();
-      });
-    }
-  }
+  GoogleMapController? _mapController;
+  BitmapDescriptor? _customIcon;
 
   @override
   void initState() {
     super.initState();
-    _determinePosition();
-  }
-  LatLng? _selectedPosition;
-  String? _selectedAddress;
-
-  Future<void> _onMapTap(LatLng position) async {
-    String address = 'Dirección no disponible';
-    try {
-      List<Placemark> placemarks = await placemarkFromCoordinates(position.latitude, position.longitude);
-      if (placemarks.isNotEmpty) {
-        final p = placemarks.first;
-        address = '${p.street}, ${p.locality}, ${p.country}';
-      }
-    } catch (_) {}
-    setState(() {
-      _marker != null ? {_marker!} : {};
-      _marker =
-        Marker(
-          markerId: MarkerId('tap_${position.latitude}_${position.longitude}'),
-          position: position,
-          infoWindow: InfoWindow(title: 'Punto seleccionado', snippet: address),
-        );
-      _selectedPosition = position;
-      _selectedAddress = address;
+    // Espera a que el mapa esté creado antes de mover la cámara
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _goToMyLocation();
     });
   }
 
-  Future<void> _determinePosition() async {
-    LocationPermission permission = await Geolocator.requestPermission();
-    if (permission == LocationPermission.always || permission == LocationPermission.whileInUse) {
-      Position position = await Geolocator.getCurrentPosition(desiredAccuracy: LocationAccuracy.high);
-      final latLng = LatLng(position.latitude, position.longitude);
-      setState(() {
-        _currentPosition = latLng;
-        _marker =
-          Marker(
-            markerId: const MarkerId('ubicacion_actual'),
-            position: latLng,
-            infoWindow: const InfoWindow(title: 'Mi ubicacion'),
-          );
-      });
-      _getAddress(latLng);
+
+  Future<List<String>> _getSuggestions(String query) async {
+    final predictions = await _placesService.searchPlaces(query);
+    return predictions.map((p) => p.description ?? '').toList();
+  }
+
+  Future<void> _onSuggestionSelected(String suggestion) async {
+    final predictions = await _placesService.searchPlaces(suggestion);
+    if (predictions.isNotEmpty) {
+      final place = predictions.first;
+      final details = await _placesService.getPlaceDetails(place.placeId!);
+      if (details != null) {
+        final location = details.geometry!.location;
+        final LatLng newPosition = LatLng(location.lat, location.lng);
+        _mapController?.animateCamera(CameraUpdate.newLatLng(newPosition));
+        setState(() {
+          _selectedPosition = newPosition;
+          _address = place.description;
+          _searchController.clear();
+        });
+      }
     }
   }
 
@@ -120,122 +75,79 @@ class _MapPageState extends State<MapPage> {
     }
   }
 
-  void _onMapCreated(GoogleMapController controller) {
-    mapController = controller;
+  void _onMapTap(LatLng position) {
+    setState(() {
+      _selectedPosition = position;
+      _address = null;
+    });
+    _getAddress(position);
   }
 
+  Future<void> _goToMyLocation() async {
+    final pos = await _locationService.getCurrentLocation();
+    if (pos != null) {
+      final latLng = LatLng(pos.latitude, pos.longitude);
+      setState(() {
+        _selectedPosition = latLng;
+        _address = null;
+      });
+      _mapController?.animateCamera(CameraUpdate.newLatLng(latLng));
+      _getAddress(latLng);
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
+    // _goToMyLocation();
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Geolocalización'),
-      ),
-      body: Column(
+      extendBodyBehindAppBar: true,
+
+      body: Stack(
         children: [
-          Padding(
-            padding: const EdgeInsets.all(8.0),
-            child: Column(
-              children: [
-                TextField(
-                  controller: _searchController,
-                  decoration: InputDecoration(
-                    hintText: 'Buscar ubicación...',
-                    suffixIcon: Icon(Icons.search),
-                  ),
-                  onChanged: _getSuggestions,
-                ),
-                if (_suggestions.isNotEmpty)
-                  Container(
-                    height: 200,
-                    child: ListView.builder(
-                      itemCount: _suggestions.length,
-                      itemBuilder: (context, index) {
-                        final suggestion = _suggestions[index];
-                        return ListTile(
-                          title: Text(suggestion.description ?? ''),
-                          onTap: () => _selectSuggestion(suggestion),
-                        );
-                      },
-                    ),
-                  ),
-              ],
+          // Mapa de fondo
+          MapWidget(
+            markerPosition: _selectedPosition,
+            customMarkerIcon: _customIcon,
+            onMapTap: _onMapTap,
+            onMapCreated: (controller) {
+              _mapController = controller;
+            },
+          ),
+          // Buscador flotante
+          Positioned(
+            top: MediaQuery.of(context).padding.top,
+            left: 20,
+            right: 20,
+            child: Material(
+              elevation: 8,
+              borderRadius: BorderRadius.circular(16),
+              child: SearchBox(
+                controller: _searchController,
+                suggestionsCallback: _getSuggestions,
+                onSuggestionSelected: _onSuggestionSelected,
+              ),
             ),
           ),
-          Expanded(
-            child: _currentPosition == null
-                ? const Center(child: CircularProgressIndicator())
-                : Stack(
-                    children: [
-                      GoogleMap(
-                        onMapCreated: _onMapCreated,
-                        initialCameraPosition: CameraPosition(
-                          target: _currentPosition!,
-                          zoom: 16.0,
-                        ),
-                        myLocationEnabled: true,
-                        myLocationButtonEnabled: false,
-                        markers: _marker != null ? {_marker!} : {},
-                        onTap: _onMapTap,
-                      ),
-                      Builder(
-                        builder: (context) {
-                          final latLng = _selectedPosition ?? _currentPosition;
-                          final address = _selectedAddress ?? _address;
-                          if (latLng == null) return SizedBox.shrink();
-                          return Positioned(
-                            top: 16,
-                            left: 16,
-                            child: ClipRRect(
-                              borderRadius: BorderRadius.circular(12),
-                              child: BackdropFilter(
-                                filter: ImageFilter.blur(sigmaX: 8, sigmaY: 8),
-                                child: Container(
-                                  padding: const EdgeInsets.all(12),
-                                  color: Colors.black.withOpacity(0.3),
-                                  child: Column(
-                                    crossAxisAlignment: CrossAxisAlignment.start,
-                                    children: [
-                                      Text(
-                                        'Lat: ${latLng.latitude.toStringAsFixed(6)}',
-                                        style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
-                                      ),
-                                      Text(
-                                        'Lng: ${latLng.longitude.toStringAsFixed(6)}',
-                                        style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
-                                      ),
-                                      if (address != null)
-                                        Text(
-                                          address,
-                                          style: const TextStyle(color: Colors.white),
-                                        ),
-                                    ],
-                                  ),
-                                ),
-                              ),
-                            ),
-                          );
-                        },
-                      ),
-                      Positioned(
-                        top: 16,
-                        right: 16,
-                        child: FloatingActionButton(
-                          backgroundColor: Colors.white.withOpacity(0.8),
-                          child: const Icon(Icons.my_location),
-                          onPressed: () async {
-                            _marker != null ? {_marker!} : {};
-                            await _determinePosition();
-                            if (_currentPosition != null && mapController != null) {
-                              mapController!.animateCamera(
-                                CameraUpdate.newLatLng(_currentPosition!),
-                              );
-                            }
-                          },
-                        ),
-                      ),
-                    ],
-                  ),
+          // Tarjeta de información de ubicación
+          if (_selectedPosition != null)
+            LocationInfoCard(
+              latitude: _selectedPosition!.latitude,
+              longitude: _selectedPosition!.longitude,
+              address: _address,
+            ),
+          // Botón de ubicación flotante
+          Positioned(
+            top: 140,
+            right: 24,
+            child: FloatingActionButton(
+              backgroundColor: Colors.white,
+              elevation: 8,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(16),
+              ),
+              child: const Icon(Icons.my_location, color: Colors.deepPurple),
+              onPressed: _goToMyLocation,
+            ),
           ),
         ],
       ),
